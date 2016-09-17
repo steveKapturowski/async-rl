@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+import os
+os.environ["KERAS_BACKEND"] = "tensorflow"
+
 from skimage.transform import resize
 from skimage.color import rgb2gray
 import threading
@@ -15,21 +18,22 @@ from a3c_model import build_policy_and_value_networks
 from keras import backend as K
 from atari_environment import AtariEnvironment
 
+GAME = "Breakout-v0"
+
 # Path params
-EXPERIMENT_NAME = "breakout_a3c"
-SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
-CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
-CHECKPOINT_NAME = "/tmp/breakout_a3c.ckpt-5"
+EXPERIMENT_NAME = "%s_a3c" % GAME
+SUMMARY_SAVE_PATH = "summaries/%s" % EXPERIMENT_NAME
+CHECKPOINT_SAVE_PATH = "checkpoints/%s.ckpt" % EXPERIMENT_NAME
+CHECKPOINT_NAME = "checkpoints/%s.ckpt-4680000" % EXPERIMENT_NAME
 CHECKPOINT_INTERVAL=5000
 SUMMARY_INTERVAL=5
-# TRAINING = False
-TRAINING = True
 
-SHOW_TRAINING = True
-# SHOW_TRAINING = False
+TRAINING = True
+SHOW_TRAINING = False
+# TRAINING = False
+# SHOW_TRAINING = True
 
 # Experiment params
-GAME = "Breakout-v0"
 ACTIONS = 3
 NUM_CONCURRENT = 8
 NUM_EPISODES = 20000
@@ -40,14 +44,15 @@ RESIZED_HEIGHT = 84
 
 # DQN Params
 GAMMA = 0.99
+BETA=1e-3
 
 # Optimization Params
-LEARNING_RATE = 0.00001
+LEARNING_RATE = 0.0001
 
 #Shared global parameters
 T = 0
 TMAX = 80000000
-t_max = 32
+t_max = 8
 
 def sample_policy_action(num_actions, probs):
     """
@@ -74,6 +79,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
 
     # Wrap env with AtariEnvironment helper class
     env = AtariEnvironment(gym_env=env, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT, agent_history_length=AGENT_HISTORY_LENGTH)
+    env.frameskip = (3,5)
 
     time.sleep(5*num)
 
@@ -109,7 +115,11 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             s_batch.append(s_t)
             a_batch.append(a_t)
 
-            s_t1, r_t, terminal, info = env.step(action_index)
+            r_t = 0.0
+            
+            s_t1, r_t_i, terminal, info = env.step(action_index)
+            r_t += r_t_i
+
             ep_reward += r_t
 
             r_t = np.clip(r_t, -1, 1)
@@ -138,7 +148,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
         
         # Save progress every 5000 iterations
         if T % CHECKPOINT_INTERVAL == 0:
-            saver.save(session, CHECKPOINT_SAVE_PATH, global_step = T)
+            saver.save(session, CHECKPOINT_SAVE_PATH, global_step=T)
 
         if terminal:
             # Episode ended, collect stats and reset game
@@ -152,7 +162,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
 
 def build_graph():
     # Create shared global policy and value networks
-    s, p_network, v_network, p_params, v_params = build_policy_and_value_networks(num_actions=ACTIONS, agent_history_length=AGENT_HISTORY_LENGTH, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT)
+    s, p_logits, v_network, p_params, v_params = build_policy_and_value_networks(num_actions=ACTIONS, agent_history_length=AGENT_HISTORY_LENGTH, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT)
 
     # Shared global optimizer
     optimizer = tf.train.AdamOptimizer(LEARNING_RATE)
@@ -160,14 +170,19 @@ def build_graph():
     # Op for applying remote gradients
     R_t = tf.placeholder("float", [None])
     a_t = tf.placeholder("float", [None, ACTIONS])
-    log_prob = tf.log(tf.reduce_sum(tf.mul(p_network, a_t), reduction_indices=1))
-    p_loss = -log_prob * (R_t - v_network)
+    p_network = tf.nn.softmax(p_logits)
+
+    log_probs = tf.nn.log_softmax(p_logits)
+    action_prob = tf.reduce_sum(a_t * log_probs, 1)
+
+    p_loss = -action_prob * (R_t - tf.stop_gradient(v_network))
     v_loss = tf.reduce_mean(tf.square(R_t - v_network))
 
-    total_loss = p_loss + (0.5 * v_loss)
+    entropy = tf.reduce_sum(p_network * log_probs)
+    total_loss = p_loss + 0.5*v_loss + BETA*entropy
 
     minimize = optimizer.minimize(total_loss)
-    return s, a_t, R_t, minimize
+    return s, a_t, R_t, minimize, p_network, v_network
 
 # Set up some episode summary ops to visualize on tensorboard.
 def setup_summaries():
@@ -190,7 +205,11 @@ def train(session, graph_ops, saver):
     summary_op = summary_ops[-1]
 
     # Initialize variables
-    session.run(tf.initialize_all_variables())
+    if False: #os.path.exists(CHECKPOINT_NAME):
+        saver.restore(session, CHECKPOINT_NAME)
+    else:
+        session.run(tf.initialize_all_variables())
+
     writer = tf.train.SummaryWriter(SUMMARY_SAVE_PATH, session.graph)
 
     # Start NUM_CONCURRENT training threads
@@ -219,10 +238,11 @@ def evaluation(session, graph_ops, saver):
     monitor_env.monitor.start('/tmp/'+EXPERIMENT_NAME+"/eval")
 
     # Unpack graph ops
-    s, a_t, R_t, learning_rate, minimize, p_network, v_network = graph_ops
+    s, a_t, R_t, minimize, p_network, v_network = graph_ops
 
     # Wrap env with AtariEnvironment helper class
     env = AtariEnvironment(gym_env=monitor_env, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT, agent_history_length=AGENT_HISTORY_LENGTH)
+    print 'ACTIONS:', env.gym_actions
 
     for i_episode in xrange(100):
         s_t = env.get_initial_state()

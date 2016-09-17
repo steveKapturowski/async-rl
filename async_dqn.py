@@ -1,41 +1,41 @@
 #!/usr/bin/env python
 import os
+import gym
+import sys
+import time
+import random
+import threading
+import numpy as np
+import tensorflow as tf
+#CUDA_VISIBLE_DEVICES='' will run cpu only
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
+from atari_environment import AtariEnvironment
 from skimage.transform import resize
 from skimage.color import rgb2gray
-from atari_environment import AtariEnvironment
-import threading
-import tensorflow as tf
-import sys
-import random
-import numpy as np
-import time
-import gym
-from keras import backend as K
 from model import build_network
 from keras import backend as K
 
 flags = tf.app.flags
 
-flags.DEFINE_string('experiment', 'dqn_breakout', 'Name of the current experiment')
-flags.DEFINE_string('game', 'Breakout-v0', 'Name of the atari game to play. Full list here: https://gym.openai.com/envs#atari')
+flags.DEFINE_string('experiment', 'dqn_zaxxon', 'Name of the current experiment')
+flags.DEFINE_string('game', 'Zaxxon-v0', 'Name of the atari game to play. Full list here: https://gym.openai.com/envs#atari')
 flags.DEFINE_integer('num_concurrent', 8, 'Number of concurrent actor-learner threads to use during training.')
 flags.DEFINE_integer('tmax', 80000000, 'Number of training timesteps.')
 flags.DEFINE_integer('resized_width', 84, 'Scale screen to this width.')
 flags.DEFINE_integer('resized_height', 84, 'Scale screen to this height.')
 flags.DEFINE_integer('agent_history_length', 4, 'Use this number of recent screens as the environment state.')
-flags.DEFINE_integer('network_update_frequency', 32, 'Frequency with which each actor learner thread does an async gradient update')
+flags.DEFINE_integer('network_update_frequency', 16, 'Frequency with which each actor learner thread does an async gradient update')
 flags.DEFINE_integer('target_network_update_frequency', 10000, 'Reset the target network every n timesteps')
-flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
+flags.DEFINE_float('learning_rate', 0.0007, 'Initial learning rate.')
 flags.DEFINE_float('gamma', 0.99, 'Reward discount rate.')
 flags.DEFINE_integer('anneal_epsilon_timesteps', 1000000, 'Number of timesteps to anneal epsilon.')
 flags.DEFINE_string('summary_dir', '/tmp/summaries', 'Directory for storing tensorboard summaries')
 flags.DEFINE_string('checkpoint_dir', '/tmp/checkpoints', 'Directory for storing model checkpoints')
-flags.DEFINE_integer('summary_interval', 5,
+flags.DEFINE_integer('summary_interval', 10,
                      'Save training summary to file every n seconds (rounded '
                      'up to statistics interval.')
-flags.DEFINE_integer('checkpoint_interval', 600,
+flags.DEFINE_integer('checkpoint_interval', 1000,
                      'Checkpoint the model (i.e. save the parameters) every n '
                      'seconds (rounded up to statistics interval.')
 flags.DEFINE_boolean('show_training', True, 'If true, have gym render evironments during training')
@@ -119,7 +119,10 @@ def actor_learner_thread(thread_id, env, session, graph_ops, num_actions, summar
                 epsilon -= (initial_epsilon - final_epsilon) / FLAGS.anneal_epsilon_timesteps
     
             # Gym excecutes action in game environment on behalf of actor-learner
-            s_t1, r_t, terminal, info = env.step(action_index)
+            r_t = 0.0
+            for _ in range(4):
+                s_t1, r_t_i, terminal, info = env.step(action_index)
+                r_t += r_t_i
 
             # Accumulate gradients
             readout_j1 = target_q_values.eval(session = session, feed_dict = {st : [s_t1]})

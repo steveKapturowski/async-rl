@@ -4,7 +4,7 @@ from keras.layers import Convolution2D, Flatten, Dense, Input
 from keras.models import Model
 
 def build_policy_and_value_networks(num_actions, agent_history_length, resized_width, resized_height):
-    with tf.device("/cpu:0"):
+    with tf.device("/gpu:0"):
         state = tf.placeholder("float", [None, agent_history_length, resized_width, resized_height])
         
         inputs = Input(shape=(agent_history_length, resized_width, resized_height,))
@@ -13,11 +13,10 @@ def build_policy_and_value_networks(num_actions, agent_history_length, resized_w
         shared = Flatten()(shared)
         shared = Dense(name="h1", output_dim=256, activation='relu')(shared)
 
-        action_probs = Dense(name="p", output_dim=num_actions, activation='softmax')(shared)
-        
+        action_logits = Dense(name="p", output_dim=num_actions, activation='linear')(shared)
         state_value = Dense(name="v", output_dim=1, activation='linear')(shared)
 
-        policy_network = Model(input=inputs, output=action_probs)
+        policy_network = Model(input=inputs, output=action_logits)
         value_network = Model(input=inputs, output=state_value)
 
         p_params = policy_network.trainable_weights
